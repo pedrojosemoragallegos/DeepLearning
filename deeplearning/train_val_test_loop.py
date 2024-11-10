@@ -10,6 +10,18 @@ from torch.nn.modules.loss import _Loss as Criterion
 from deeplearning.callback import CallbackList
 
 
+def log_callback(callbacks: CallbackList, method: str, **kwargs):
+    """
+    Dynamically call a callback method with provided logs.
+
+    Args:
+        callbacks (CallbackList): List of callbacks.
+        method (str): Callback method to call (e.g., 'on_batch_start').
+        **kwargs: Additional logs to pass to the callback.
+    """
+    getattr(callbacks, method)(logs=kwargs)
+
+
 def _process_batch(
     inputs: Tensor,
     labels: Tensor,
@@ -18,189 +30,198 @@ def _process_batch(
     criterion: Criterion,
     callbacks: CallbackList,
 ) -> float:
-    # callback: before forward pass
-    callbacks.on_batch_start(
-        batch=None,
-        logs={
-            "phase": "train" if optimizer else "validation",
-            "inputs": inputs,
-            "labels": labels,
-        },
+    """
+    Process a single batch of data.
+
+    Args:
+        inputs (Tensor): Input data.
+        labels (Tensor): Ground truth labels.
+        optimizer (Optional[Optimizer]): Optimizer, if in training mode.
+        model (Model): Neural network model.
+        criterion (Criterion): Loss function.
+        callbacks (CallbackList): List of callbacks.
+
+    Returns:
+        float: Loss value for the batch.
+    """
+    phase: str = "train" if optimizer else "validation"
+
+    # Callback: before forward pass
+    log_callback(callbacks, "on_batch_start", phase=phase, inputs=inputs, labels=labels)
+
+    if optimizer:
+        optimizer.zero_grad()  # Training
+
+    outputs: Tensor = model(inputs)  # Forward pass
+
+    # Callback: after forward pass
+    log_callback(callbacks, "on_batch_end", phase=phase, outputs=outputs)
+
+    loss: Tensor = criterion(outputs, labels)  # Compute loss
+
+    # Callback: after loss computation
+    log_callback(
+        callbacks,
+        "on_batch_end",
+        phase=phase,
+        loss=loss.item(),
+        outputs=outputs,
+        labels=labels,
     )
 
     if optimizer:
-        optimizer.zero_grad()  # train
+        # Callback: before backward pass
+        log_callback(callbacks, "on_batch_start", phase="backward", loss=loss.item())
 
-    outputs: Tensor = model(inputs)  # train | validation
+        loss.backward()  # Backward pass
 
-    # callback: after forward pass, before loss computation
-    callbacks.on_batch_end(batch=None, logs={"outputs": outputs})
+        # Callback: after backward pass
+        log_callback(callbacks, "on_batch_end", phase="backward_done", model=model)
 
-    loss: Tensor = criterion(outputs, labels)  # train | validation
+        optimizer.step()  # Optimizer step
 
-    # callback: after loss computation
-    callbacks.on_batch_end(
-        batch=None, logs={"loss": loss.item(), "outputs": outputs, "labels": labels}
-    )
-
-    if optimizer:
-        # callback: before backward pass
-        callbacks.on_batch_start(
-            batch=None, logs={"phase": "backward", "loss": loss.item()}
-        )
-        loss.backward()  # train
-
-        # callback: after backward pass, before optimizer step
-        callbacks.on_batch_end(
-            batch=None,
-            logs={
-                "phase": "backward_done",
-                "gradients": [p.grad for p in model.parameters() if p.grad is not None],
-            },
+        # Callback: after optimizer step
+        log_callback(
+            callbacks,
+            "on_batch_end",
+            phase="step_done",
+            updated_parameters=[p for p in model.parameters() if p.grad is not None],
         )
 
-        optimizer.step()  # train
-
-        # callback: after optimizer step
-        callbacks.on_batch_end(
-            batch=None,
-            logs={
-                "phase": "step_done",
-                "updated_parameters": [p for p in model.parameters()],
-            },
-        )
-
-    batch_loss: float = loss.item()  # train | validation
-    return batch_loss
+    return loss.item()
 
 
 def _batch_loop(
     dataloader: DataLoader,
     device: Device,
     total_loss: float,
-    model: Model,  # train | validation
-    criterion: Criterion,  # train | validation
+    model: Model,
+    criterion: Criterion,
     callbacks: CallbackList,
-    optimizer: Optional[Optimizer] = None,  # train
+    optimizer: Optional[Optimizer] = None,
 ) -> float:
-    # callback: start batch_loop
-    callbacks.on_batch_start(
-        batch=None, logs={"phase": "batch_loop_start", "total_loss_start": total_loss}
+    """
+    Process an entire DataLoader in a single loop.
+
+    Args:
+        dataloader (DataLoader): DataLoader for the current phase.
+        device (Device): Device to process the data on.
+        total_loss (float): Initial loss (cumulative across epochs).
+        model (Model): Neural network model.
+        criterion (Criterion): Loss function.
+        callbacks (CallbackList): List of callbacks.
+        optimizer (Optional[Optimizer]): Optimizer for training.
+
+    Returns:
+        float: Total loss for the DataLoader.
+    """
+
+    # Callback: start of batch loop
+    log_callback(
+        callbacks, "on_batch_start", phase="batch_loop_start", total_loss=total_loss
     )
 
     for batch_idx, batch in enumerate(dataloader):
-        # callback: start batch
-        callbacks.on_batch_start(
-            batch=batch_idx, logs={"batch_idx": batch_idx, "batch_data": batch}
-        )
+        # Callback: start of individual batch
+        log_callback(callbacks, "on_batch_start", batch_idx=batch_idx, batch=batch)
 
         inputs: Tensor = batch[0].to(device)
         labels: Tensor = batch[1].to(device)
 
         batch_loss: float = _process_batch(
-            inputs=inputs,
-            labels=labels,
-            optimizer=optimizer,
-            model=model,
-            criterion=criterion,
-            callbacks=callbacks,
+            inputs, labels, optimizer, model, criterion, callbacks
         )
-
         total_loss += batch_loss
 
-        # callback: end batch
-        callbacks.on_batch_end(
-            batch=batch_idx,
-            logs={
-                "batch_idx": batch_idx,
-                "batch_loss": batch_loss,
-                "total_loss_so_far": total_loss,
-                "inputs": inputs,
-                "labels": labels,
-            },
+        # Callback: end of individual batch
+        log_callback(
+            callbacks,
+            "on_batch_end",
+            batch_idx=batch_idx,
+            batch_loss=batch_loss,
+            total_loss=total_loss,
         )
 
-    # callback: end batch_loop
-    callbacks.on_batch_end(
-        batch=None, logs={"phase": "batch_loop_end", "final_total_loss": total_loss}
+    # Callback: end of batch loop
+    log_callback(
+        callbacks, "on_batch_end", phase="batch_loop_end", total_loss=total_loss
     )
+
     return total_loss
 
 
 def train_val_loop(
     is_train: bool,
-    num_epochs: Optional[int],  # train
-    dataloader: DataLoader,  # train | validation
-    device: Device,  # train | validation
-    optimizer: Optional[Optimizer],  # train
-    model: Model,  # train | validation
-    criterion: Criterion,  # train | validation
-    cumulative_loss: float = 0.0,  # resuming cumulative loss
+    num_epochs: Optional[int],
+    dataloader: DataLoader,
+    device: Device,
+    optimizer: Optional[Optimizer],
+    model: Model,
+    criterion: Criterion,
+    cumulative_loss: float = 0.0,
     callbacks: CallbackList = CallbackList(),
 ):
+    """
+    Loop for training or validation.
+
+    Args:
+        is_train (bool): Whether to perform training or validation.
+        num_epochs (Optional[int]): Number of epochs (training only).
+        dataloader (DataLoader): DataLoader for the phase.
+        device (Device): Device to process data on.
+        optimizer (Optional[Optimizer]): Optimizer for training.
+        model (Model): Neural network model.
+        criterion (Criterion): Loss function.
+        cumulative_loss (float): Initial cumulative loss.
+        callbacks (CallbackList): List of callbacks.
+    """
     if is_train:
-        # callback: start train_loop
-        callbacks.on_train_start(
-            logs={"num_epochs": num_epochs, "initial_cumulative_loss": cumulative_loss}
+        # Callback: start of training
+        log_callback(
+            callbacks,
+            "on_train_start",
+            num_epochs=num_epochs,
+            cumulative_loss=cumulative_loss,
         )
 
         for epoch in range(num_epochs):
-            # callback: start epoch
-            callbacks.on_epoch_start(
-                epoch=epoch, logs={"epoch": epoch, "cumulative_loss": cumulative_loss}
+            # Callback: start of epoch
+            log_callback(
+                callbacks,
+                "on_epoch_start",
+                epoch=epoch,
+                cumulative_loss=cumulative_loss,
             )
 
-            epoch_loss: float = 0.0  # resetting loss for each epoch
             epoch_loss = _batch_loop(
-                dataloader=dataloader,
-                device=device,
-                total_loss=epoch_loss,
-                optimizer=optimizer,
-                model=model,
-                criterion=criterion,
-                callbacks=callbacks,
+                dataloader, device, 0.0, model, criterion, callbacks, optimizer
             )
             cumulative_loss += epoch_loss
 
-            # callback: end epoch
-            callbacks.on_epoch_end(
+            # Callback: end of epoch
+            log_callback(
+                callbacks,
+                "on_epoch_end",
                 epoch=epoch,
-                logs={
-                    "epoch": epoch,
-                    "epoch_loss": epoch_loss,
-                    "cumulative_loss": cumulative_loss,
-                    "model_state": model.state_dict(),
-                },
+                epoch_loss=epoch_loss,
+                cumulative_loss=cumulative_loss,
             )
 
-        # callback: end train_loop
-        callbacks.on_train_end(
-            logs={
-                "final_cumulative_loss": cumulative_loss,
-                "final_model_state": model.state_dict(),
-            }
-        )
+        # Callback: end of training
+        log_callback(callbacks, "on_train_end", cumulative_loss=cumulative_loss)
     else:
         model.eval()
 
-        # callback: start validation
-        callbacks.on_validation_start(logs={"initial_cumulative_loss": cumulative_loss})
+        # Callback: start of validation
+        log_callback(callbacks, "on_validation_start", cumulative_loss=cumulative_loss)
 
         with torch.no_grad():
-            loss: float = cumulative_loss
-            loss = _batch_loop(
-                dataloader=dataloader,
-                device=device,
-                total_loss=loss,
-                model=model,
-                criterion=criterion,
-                callbacks=callbacks,
+            cumulative_loss = _batch_loop(
+                dataloader, device, cumulative_loss, model, criterion, callbacks
             )
 
-        # callback: end validation
-        callbacks.on_validation_end(
-            logs={"validation_loss": loss, "model_state": model.state_dict()}
-        )
+        # Callback: end of validation
+        log_callback(callbacks, "on_validation_end", cumulative_loss=cumulative_loss)
 
 
 def test_loop(
@@ -209,40 +230,40 @@ def test_loop(
     device: Device,
     callbacks: CallbackList = CallbackList(),
 ):
+    """
+    Loop for testing.
+
+    Args:
+        testloader (DataLoader): DataLoader for testing.
+        model (Model): Neural network model.
+        device (Device): Device to process data on.
+        callbacks (CallbackList): List of callbacks.
+    """
     model.eval()
 
-    # callback: start testing
-    callbacks.on_test_start(
-        logs={
-            "test_loader": testloader,
-            "model_state": model.state_dict(),
-            "device": device,
-        }
+    # Callback: start of testing
+    log_callback(
+        callbacks, "on_test_start", dataloader=testloader, model=model, device=device
     )
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(testloader):
-            # callback: start test_batch
-            callbacks.on_batch_start(
-                batch=batch_idx, logs={"batch_idx": batch_idx, "batch_data": batch}
-            )
+            # Callback: start of test batch
+            log_callback(callbacks, "on_batch_start", batch_idx=batch_idx, batch=batch)
 
             inputs: Tensor = batch[0].to(device)
             labels: Tensor = batch[1].to(device)
             predictions: Tensor = model(inputs)
 
-            # callback: end test_batch
-            callbacks.on_batch_end(
-                batch=batch_idx,
-                logs={
-                    "batch_idx": batch_idx,
-                    "inputs": inputs,
-                    "labels": labels,
-                    "predictions": predictions,
-                },
+            # Callback: end of test batch
+            log_callback(
+                callbacks,
+                "on_batch_end",
+                batch_idx=batch_idx,
+                inputs=inputs,
+                labels=labels,
+                predictions=predictions,
             )
 
-    # callback: end testing
-    callbacks.on_test_end(
-        logs={"final_model_state": model.state_dict(), "num_batches": len(testloader)}
-    )
+    # Callback: end of testing
+    log_callback(callbacks, "on_test_end", model=model, num_batches=len(testloader))
