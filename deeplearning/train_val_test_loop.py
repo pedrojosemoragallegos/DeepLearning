@@ -1,11 +1,13 @@
 from typing import Optional
 import torch
+from tqdm.auto import tqdm
 from torch import device as Device
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.optim import Optimizer
 from torch.nn import Module as Model
 from torch.nn.modules.loss import _Loss as Criterion
+
 
 from deeplearning.callback import CallbackList
 
@@ -99,6 +101,7 @@ def _batch_loop(
     criterion: Criterion,
     callbacks: CallbackList,
     optimizer: Optional[Optimizer] = None,
+    show_progress: bool = False,  # Added a flag for progress bar
 ) -> float:
     """
     Process an entire DataLoader in a single loop.
@@ -111,6 +114,7 @@ def _batch_loop(
         criterion (Criterion): Loss function.
         callbacks (CallbackList): List of callbacks.
         optimizer (Optional[Optimizer]): Optimizer for training.
+        show_progress (bool): Whether to display a progress bar.
 
     Returns:
         float: Total loss for the DataLoader.
@@ -121,7 +125,14 @@ def _batch_loop(
         callbacks, "on_batch_start", phase="batch_loop_start", total_loss=total_loss
     )
 
-    for batch_idx, batch in enumerate(dataloader):
+    # Initialize the tqdm progress bar if requested
+    dataloader_iter = (
+        tqdm(dataloader, desc="Batch Progress", leave=False)
+        if show_progress
+        else dataloader
+    )
+
+    for batch_idx, batch in enumerate(dataloader_iter):
         # Callback: start of individual batch
         log_callback(callbacks, "on_batch_start", batch_idx=batch_idx, batch=batch)
 
@@ -142,6 +153,10 @@ def _batch_loop(
             total_loss=total_loss,
         )
 
+    # Close tqdm progress bar if used
+    if show_progress and hasattr(dataloader_iter, "close"):
+        dataloader_iter.close()
+
     # Callback: end of batch loop
     log_callback(
         callbacks, "on_batch_end", phase="batch_loop_end", total_loss=total_loss
@@ -160,6 +175,7 @@ def train_val_loop(
     criterion: Criterion,
     cumulative_loss: float = 0.0,
     callbacks: CallbackList = CallbackList(),
+    show_progress: bool = False,  # Added flag for progress bar
 ):
     """
     Loop for training or validation.
@@ -174,6 +190,7 @@ def train_val_loop(
         criterion (Criterion): Loss function.
         cumulative_loss (float): Initial cumulative loss.
         callbacks (CallbackList): List of callbacks.
+        show_progress (bool): Whether to display a progress bar.
     """
     if is_train:
         # Callback: start of training
@@ -193,9 +210,20 @@ def train_val_loop(
                 cumulative_loss=cumulative_loss,
             )
 
-            epoch_loss = _batch_loop(
-                dataloader, device, 0.0, model, criterion, callbacks, optimizer
+            # Optional progress bar for epochs
+            dataloader_iter = (
+                tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False)
+                if show_progress
+                else dataloader
             )
+
+            epoch_loss = _batch_loop(
+                dataloader_iter, device, 0.0, model, criterion, callbacks, optimizer
+            )
+
+            if show_progress and hasattr(dataloader_iter, "close"):
+                dataloader_iter.close()
+
             cumulative_loss += epoch_loss
 
             # Callback: end of epoch
@@ -216,9 +244,19 @@ def train_val_loop(
         log_callback(callbacks, "on_validation_start", cumulative_loss=cumulative_loss)
 
         with torch.no_grad():
-            cumulative_loss = _batch_loop(
-                dataloader, device, cumulative_loss, model, criterion, callbacks
+            # Optional progress bar for validation
+            dataloader_iter = (
+                tqdm(dataloader, desc="Validation", leave=False)
+                if show_progress
+                else dataloader
             )
+
+            cumulative_loss = _batch_loop(
+                dataloader_iter, device, cumulative_loss, model, criterion, callbacks
+            )
+
+            if show_progress and hasattr(dataloader_iter, "close"):
+                dataloader_iter.close()
 
         # Callback: end of validation
         log_callback(callbacks, "on_validation_end", cumulative_loss=cumulative_loss)
@@ -229,6 +267,7 @@ def test_loop(
     model: Model,
     device: Device,
     callbacks: CallbackList = CallbackList(),
+    show_progress: bool = False,  # Added flag for progress bar
 ):
     """
     Loop for testing.
@@ -238,6 +277,7 @@ def test_loop(
         model (Model): Neural network model.
         device (Device): Device to process data on.
         callbacks (CallbackList): List of callbacks.
+        show_progress (bool): Whether to display a progress bar.
     """
     model.eval()
 
@@ -246,8 +286,13 @@ def test_loop(
         callbacks, "on_test_start", dataloader=testloader, model=model, device=device
     )
 
+    # Optional progress bar for testing
+    testloader_iter = (
+        tqdm(testloader, desc="Testing", leave=False) if show_progress else testloader
+    )
+
     with torch.no_grad():
-        for batch_idx, batch in enumerate(testloader):
+        for batch_idx, batch in enumerate(testloader_iter):
             # Callback: start of test batch
             log_callback(callbacks, "on_batch_start", batch_idx=batch_idx, batch=batch)
 
@@ -264,6 +309,10 @@ def test_loop(
                 labels=labels,
                 predictions=predictions,
             )
+
+    # Close tqdm progress bar if used
+    if show_progress and hasattr(testloader_iter, "close"):
+        testloader_iter.close()
 
     # Callback: end of testing
     log_callback(callbacks, "on_test_end", model=model, num_batches=len(testloader))
