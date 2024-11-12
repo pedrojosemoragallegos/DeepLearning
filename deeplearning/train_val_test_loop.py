@@ -7,20 +7,14 @@ from torch.utils.data import DataLoader
 from torch.optim import Optimizer
 from torch.nn import Module as Model
 from torch.nn.modules.loss import _Loss as Criterion
+from .callback_list import CallbackList
 
 
-from deeplearning.callback import CallbackList
+class StopTrainingException(Exception):
+    pass
 
 
 def log_callback(callbacks: CallbackList, method: str, **kwargs):
-    """
-    Dynamically call a callback method with provided logs.
-
-    Args:
-        callbacks (CallbackList): List of callbacks.
-        method (str): Callback method to call (e.g., 'on_batch_start').
-        **kwargs: Additional logs to pass to the callback.
-    """
     getattr(callbacks, method)(logs=kwargs)
 
 
@@ -32,36 +26,32 @@ def _process_batch(
     criterion: Criterion,
     callbacks: CallbackList,
 ) -> float:
-    """
-    Process a single batch of data.
-
-    Args:
-        inputs (Tensor): Input data.
-        labels (Tensor): Ground truth labels.
-        optimizer (Optional[Optimizer]): Optimizer, if in training mode.
-        model (Model): Neural network model.
-        criterion (Criterion): Loss function.
-        callbacks (CallbackList): List of callbacks.
-
-    Returns:
-        float: Loss value for the batch.
-    """
     PHASE: str = "train" if optimizer else "validation"
 
-    # callback: before forward pass
     log_callback(callbacks, "on_batch_start", phase=PHASE, inputs=inputs, labels=labels)
 
     if optimizer:
-        optimizer.zero_grad()  # training
+        optimizer.zero_grad()
 
-    outputs: Tensor = model(inputs)  # forward pass
+    outputs: Tensor = model(inputs)
+    log_callback(callbacks, "on_forward_end", phase=PHASE, outputs=outputs)
 
-    # callback: after forward pass
-    log_callback(callbacks, "on_batch_end", phase=PHASE, outputs=outputs)
+    loss: Tensor = criterion(outputs, labels)
+    log_callback(callbacks, "on_loss_computed", phase=PHASE, loss=loss.item())
 
-    loss: Tensor = criterion(outputs, labels)  # compute loss
+    if optimizer:
+        log_callback(callbacks, "on_backward_start", phase=PHASE, loss=loss.item())
+        loss.backward()
+        log_callback(callbacks, "on_backward_end", phase=PHASE)
 
-    # callback: after loss computation
+        optimizer.step()
+        log_callback(
+            callbacks,
+            "on_optimizer_step",
+            phase=PHASE,
+            updated_parameters=[p for p in model.parameters() if p.grad is not None],
+        )
+
     log_callback(
         callbacks,
         "on_batch_end",
@@ -70,25 +60,6 @@ def _process_batch(
         outputs=outputs,
         labels=labels,
     )
-
-    if optimizer:
-        # callback: before backward pass
-        log_callback(callbacks, "on_batch_start", phase="backward", loss=loss.item())
-
-        loss.backward()  # backward pass
-
-        # callback: after backward pass
-        log_callback(callbacks, "on_batch_end", phase="backward_done", model=model)
-
-        optimizer.step()  # optimizer step
-
-        # callback: after optimizer step
-        log_callback(
-            callbacks,
-            "on_batch_end",
-            phase="step_done",
-            updated_parameters=[p for p in model.parameters() if p.grad is not None],
-        )
 
     return loss.item()
 
@@ -103,24 +74,6 @@ def _batch_loop(
     optimizer: Optional[Optimizer] = None,
     show_progress: bool = False,
 ) -> float:
-    """
-    Process an entire DataLoader in a single loop.
-
-    Args:
-        dataloader (DataLoader): DataLoader for the current phase.
-        device (Device): Device to process the data on.
-        total_loss (float): Initial loss (cumulative across epochs).
-        model (Model): Neural network model.
-        criterion (Criterion): Loss function.
-        callbacks (CallbackList): List of callbacks.
-        optimizer (Optional[Optimizer]): Optimizer for training.
-        show_progress (bool): Whether to display a progress bar.
-
-    Returns:
-        float: Total loss for the DataLoader.
-    """
-
-    # initialize the tqdm progress bar if requested
     dataloader_iter = (
         tqdm(dataloader, desc="Batch Progress", leave=False)
         if show_progress
@@ -136,7 +89,6 @@ def _batch_loop(
         )
         total_loss += batch_loss
 
-    # close tqdm progress bar if used
     if show_progress and hasattr(dataloader_iter, "close"):
         dataloader_iter.close()
 
@@ -151,46 +103,35 @@ def _process_epoch(
     callbacks: CallbackList,
     optimizer: Optional[Optimizer] = None,
     show_progress: bool = False,
+    epoch: int = 0,
 ) -> float:
-    """
-    Process an entire epoch of data.
-
-    Args:
-        dataloader (DataLoader): DataLoader for the current phase.
-        device (Device): Device to process the data on.
-        model (Model): Neural network model.
-        criterion (Criterion): Loss function.
-        callbacks (CallbackList): List of callbacks.
-        optimizer (Optional[Optimizer]): Optimizer for training phase.
-        show_progress (bool): Whether to display a progress bar.
-
-    Returns:
-        float: Total loss for the epoch.
-    """
     PHASE: str = "train" if optimizer else "validation"
 
-    # callback: start of epoch
-    log_callback(callbacks, "on_epoch_start", phase=PHASE)
+    log_callback(callbacks, "on_epoch_start", phase=PHASE, epoch=epoch)
+    model.train() if optimizer else model.eval()
 
-    model.train() if optimizer else model.eval()  # Set model mode
+    total_loss: float = 0.0
+    dataloader_iter = (
+        tqdm(dataloader, desc=f"{PHASE.capitalize()} Epoch {epoch}", leave=False)
+        if show_progress
+        else dataloader
+    )
 
-    total_loss = 0.0
+    try:
+        for batch_idx, batch in enumerate(dataloader_iter):
+            inputs, labels = batch[0].to(device), batch[1].to(device)
+            batch_loss = _process_batch(
+                inputs, labels, optimizer, model, criterion, callbacks
+            )
+            total_loss += batch_loss
 
-    with torch.set_grad_enabled(PHASE == "train"):
-        total_loss = _batch_loop(
-            dataloader,
-            device,
-            total_loss,
-            model,
-            criterion,
-            callbacks,
-            optimizer,
-            show_progress,
-        )
+    except KeyboardInterrupt:
+        log_callback(callbacks, "on_training_stopped", epoch=epoch, batch_idx=batch_idx)
+        raise StopTrainingException("Training interrupted manually.")
 
-    # callback: end of epoch
-    log_callback(callbacks, "on_epoch_end", phase=PHASE, total_loss=total_loss)
-
+    log_callback(
+        callbacks, "on_epoch_end", phase=PHASE, total_loss=total_loss, epoch=epoch
+    )
     return total_loss
 
 
@@ -203,27 +144,11 @@ def validation_loop(
     cumulative_loss: float = 0.0,
     show_progress: bool = False,
 ) -> float:
-    """
-    Perform a validation loop over the given DataLoader.
+    model.eval()
 
-    Args:
-        dataloader (DataLoader): DataLoader for validation data.
-        device (Device): Device to process the data on.
-        model (Model): Neural network model.
-        criterion (Criterion): Loss function.
-        callbacks (CallbackList): List of callbacks.
-        cumulative_loss (float): Initial cumulative loss.
-        show_progress (bool): Whether to display a progress bar.
-
-    Returns:
-        float: Cumulative loss over the validation data.
-    """
-    model.eval()  # Set model to evaluation mode
-
-    # callback: start of validation
     log_callback(callbacks, "on_validation_start", cumulative_loss=cumulative_loss)
 
-    with torch.no_grad():  # disable gradient calculation for validation
+    with torch.no_grad():
         dataloader_iter = (
             tqdm(dataloader, desc="Validation", leave=False)
             if show_progress
@@ -237,9 +162,7 @@ def validation_loop(
         if show_progress and hasattr(dataloader_iter, "close"):
             dataloader_iter.close()
 
-    # callback: end of validation
     log_callback(callbacks, "on_validation_end", cumulative_loss=cumulative_loss)
-
     return cumulative_loss
 
 
@@ -253,59 +176,78 @@ def train_val_loop(
     num_epochs: int,
     validation_dataloader: Optional[DataLoader] = None,
     show_progress: bool = False,
+    resume_from_checkpoint: Optional[str] = None,
 ) -> None:
-    """
-    Train the model for a specified number of epochs, with optional validation.
+    start_epoch: int = 0
 
-    Args:
-        train_dataloader (DataLoader): DataLoader for training data.
-        device (Device): Device to process the data on.
-        model (Model): Neural network model.
-        criterion (Criterion): Loss function.
-        optimizer (Optimizer): Optimizer for training.
-        callbacks (CallbackList): List of callbacks.
-        num_epochs (int): Number of epochs to train for.
-        validation_dataloader (Optional[DataLoader]): DataLoader for validation data.
-        show_progress (bool): Whether to display a progress bar.
-    """
-    cumulative_loss: float = 0.0
+    if resume_from_checkpoint:
+        try:
+            checkpoint = torch.load(resume_from_checkpoint)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            start_epoch = checkpoint["epoch"] + 1
+            log_callback(
+                callbacks, "on_checkpoint_load", success=True, epoch=start_epoch
+            )
+        except FileNotFoundError:
+            log_callback(
+                callbacks,
+                "on_checkpoint_load",
+                success=False,
+                message="No checkpoint found.",
+            )
+        except KeyError as e:
+            log_callback(
+                callbacks,
+                "on_checkpoint_load",
+                success=False,
+                message=f"Checkpoint missing key: {e}",
+            )
+            raise KeyError(f"Checkpoint missing key: {e}")
+        except Exception as e:
+            log_callback(
+                callbacks,
+                "on_checkpoint_load",
+                success=False,
+                message=f"Failed to load checkpoint: {e}",
+            )
+            raise RuntimeError(f"Failed to load checkpoint: {e}")
 
-    # callback: start of training
-    log_callback(
-        callbacks,
-        "on_train_start",
-        num_epochs=num_epochs,
-        cumulative_loss=cumulative_loss,
-    )
+    log_callback(callbacks, "on_train_start", num_epochs=num_epochs)
 
-    for epoch in range(num_epochs):
-        # training phase
-        train_loss = _process_epoch(
-            dataloader=train_dataloader,
-            device=device,
-            model=model,
-            criterion=criterion,
-            callbacks=callbacks,
+    for epoch in range(start_epoch, num_epochs):
+        _process_epoch(
+            train_dataloader,
+            device,
+            model,
+            criterion,
+            callbacks,
             optimizer=optimizer,
             show_progress=show_progress,
+            epoch=epoch,
         )
 
-        cumulative_loss += train_loss
-
-        # validation phase (if applicable)
         if validation_dataloader:
-            validation_loop(
-                dataloader=validation_dataloader,
-                device=device,
-                model=model,
-                criterion=criterion,
-                callbacks=callbacks,
-                cumulative_loss=0.0,
+            _process_epoch(
+                validation_dataloader,
+                device,
+                model,
+                criterion,
+                callbacks,
+                optimizer=None,
                 show_progress=show_progress,
+                epoch=epoch,
             )
 
-    # callback: end of training
-    log_callback(callbacks, "on_train_end", cumulative_loss=cumulative_loss)
+        log_callback(
+            callbacks,
+            "on_checkpoint_save",
+            model=model,
+            optimizer=optimizer,
+            epoch=epoch,
+        )
+
+    log_callback(callbacks, "on_train_end")
 
 
 def test_loop(
@@ -315,50 +257,36 @@ def test_loop(
     callbacks: CallbackList = CallbackList(),
     show_progress: bool = False,
 ):
-    """
-    Loop for testing.
-
-    Args:
-        testloader (DataLoader): DataLoader for testing.
-        model (Model): Neural network model.
-        device (Device): Device to process data on.
-        callbacks (CallbackList): List of callbacks.
-        show_progress (bool): Whether to display a progress bar.
-    """
     model.eval()
 
-    # callback: start of testing
     log_callback(
         callbacks, "on_test_start", dataloader=testloader, model=model, device=device
     )
 
-    # Optional progress bar for testing
     testloader_iter = (
         tqdm(testloader, desc="Testing", leave=False) if show_progress else testloader
     )
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(testloader_iter):
-            # callback: start of test batch
-            log_callback(callbacks, "on_batch_start", batch_idx=batch_idx, batch=batch)
+            log_callback(
+                callbacks, "on_test_batch_start", batch_idx=batch_idx, batch=batch
+            )
 
             inputs: Tensor = batch[0].to(device)
             labels: Tensor = batch[1].to(device)
             predictions: Tensor = model(inputs)
 
-            # callback: end of test batch
             log_callback(
                 callbacks,
-                "on_batch_end",
+                "on_test_batch_end",
                 batch_idx=batch_idx,
                 inputs=inputs,
                 labels=labels,
                 predictions=predictions,
             )
 
-    # close tqdm progress bar if used
     if show_progress and hasattr(testloader_iter, "close"):
         testloader_iter.close()
 
-    # callback: end of testing
     log_callback(callbacks, "on_test_end", model=model, num_batches=len(testloader))
