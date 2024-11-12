@@ -1,6 +1,5 @@
 from typing import Optional
 import torch
-from tqdm.auto import tqdm
 from torch import device as Device
 from torch import Tensor
 from torch.utils.data import DataLoader
@@ -75,25 +74,27 @@ def _batch_loop(
     criterion: Criterion,
     callbacks: CallbackList,
     optimizer: Optional[Optimizer] = None,
-    show_progress: bool = False,
+    scaler: Optional[GradScaler] = None,
 ) -> float:
-    dataloader_iter = (
-        tqdm(dataloader, desc="Batch Progress", leave=False)
-        if show_progress
-        else dataloader
-    )
+    PHASE: str = "train" if optimizer else "validation"
 
-    for batch_idx, batch in enumerate(dataloader_iter):
+    for batch_idx, batch in enumerate(dataloader):
         inputs: Tensor = batch[0].to(device)
         labels: Tensor = batch[1].to(device)
 
         batch_loss: float = _process_batch(
-            inputs, labels, optimizer, model, criterion, callbacks
+            inputs, labels, optimizer, model, criterion, callbacks, scaler
         )
         total_loss += batch_loss
 
-    if show_progress and hasattr(dataloader_iter, "close"):
-        dataloader_iter.close()
+        log_callback(
+            callbacks,
+            "on_batch_start",
+            phase=PHASE,
+            batch_idx=batch_idx,
+            loss=batch_loss,
+            total_batches=len(dataloader),
+        )
 
     return total_loss
 
@@ -105,37 +106,36 @@ def _process_epoch(
     criterion: Criterion,
     callbacks: CallbackList,
     optimizer: Optional[Optimizer] = None,
-    show_progress: bool = False,
     epoch: int = 0,
     scaler: Optional[GradScaler] = None,
 ) -> float:
     PHASE: str = "train" if optimizer else "validation"
 
-    log_callback(callbacks, "on_epoch_start", phase=PHASE, epoch=epoch)
-    model.train() if optimizer else model.eval()
-
-    total_loss: float = 0.0
-    dataloader_iter = (
-        tqdm(dataloader, desc=f"{PHASE.capitalize()} Epoch {epoch}", leave=False)
-        if show_progress
-        else dataloader
+    log_callback(
+        callbacks,
+        "on_epoch_start",
+        phase=PHASE,
+        epoch=epoch,
+        total_batches=len(dataloader),
     )
 
-    try:
-        for batch_idx, batch in enumerate(dataloader_iter):
-            inputs, labels = batch[0].to(device), batch[1].to(device)
-            batch_loss = _process_batch(
-                inputs, labels, optimizer, model, criterion, callbacks, scaler=scaler
-            )
-            total_loss += batch_loss
+    model.train() if optimizer else model.eval()
 
-    except KeyboardInterrupt:
-        log_callback(callbacks, "on_training_stopped", epoch=epoch, batch_idx=batch_idx)
-        raise StopTrainingException("Training interrupted manually.")
+    total_loss: float = _batch_loop(
+        dataloader,
+        device,
+        0.0,
+        model,
+        criterion,
+        callbacks,
+        optimizer=optimizer,
+        scaler=scaler,
+    )
 
     log_callback(
         callbacks, "on_epoch_end", phase=PHASE, total_loss=total_loss, epoch=epoch
     )
+
     return total_loss
 
 
@@ -146,27 +146,25 @@ def validation_loop(
     criterion: Criterion,
     callbacks: CallbackList,
     cumulative_loss: float = 0.0,
-    show_progress: bool = False,
 ) -> float:
     model.eval()
 
     log_callback(callbacks, "on_validation_start", cumulative_loss=cumulative_loss)
 
     with torch.no_grad():
-        dataloader_iter = (
-            tqdm(dataloader, desc="Validation", leave=False)
-            if show_progress
-            else dataloader
-        )
-
         cumulative_loss = _batch_loop(
-            dataloader_iter, device, cumulative_loss, model, criterion, callbacks
+            dataloader,
+            device,
+            cumulative_loss,
+            model,
+            criterion,
+            callbacks,
+            optimizer=None,
+            scaler=None,
         )
-
-        if show_progress and hasattr(dataloader_iter, "close"):
-            dataloader_iter.close()
 
     log_callback(callbacks, "on_validation_end", cumulative_loss=cumulative_loss)
+
     return cumulative_loss
 
 
@@ -179,7 +177,6 @@ def train_val_loop(
     callbacks: CallbackList,
     num_epochs: int,
     validation_dataloader: Optional[DataLoader] = None,
-    show_progress: bool = False,
     resume_from_checkpoint: Optional[str] = None,
     use_mixed_precision: bool = False,
 ) -> None:
@@ -192,8 +189,10 @@ def train_val_loop(
             model.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             start_epoch = checkpoint["epoch"] + 1
+
             if scaler and "scaler_state_dict" in checkpoint:
                 scaler.load_state_dict(checkpoint["scaler_state_dict"])
+
             log_callback(
                 callbacks, "on_checkpoint_load", success=True, epoch=start_epoch
             )
@@ -231,7 +230,6 @@ def train_val_loop(
             criterion,
             callbacks,
             optimizer=optimizer,
-            show_progress=show_progress,
             epoch=epoch,
             scaler=scaler,
         )
@@ -244,7 +242,6 @@ def train_val_loop(
                 criterion,
                 callbacks,
                 optimizer=None,
-                show_progress=show_progress,
                 epoch=epoch,
                 scaler=None,
             )
@@ -266,7 +263,6 @@ def test_loop(
     model: Model,
     device: Device,
     callbacks: CallbackList = CallbackList(),
-    show_progress: bool = False,
 ):
     model.eval()
 
@@ -274,12 +270,8 @@ def test_loop(
         callbacks, "on_test_start", dataloader=testloader, model=model, device=device
     )
 
-    testloader_iter = (
-        tqdm(testloader, desc="Testing", leave=False) if show_progress else testloader
-    )
-
     with torch.no_grad():
-        for batch_idx, batch in enumerate(testloader_iter):
+        for batch_idx, batch in enumerate(testloader):
             log_callback(
                 callbacks, "on_test_batch_start", batch_idx=batch_idx, batch=batch
             )
@@ -296,8 +288,5 @@ def test_loop(
                 labels=labels,
                 predictions=predictions,
             )
-
-    if show_progress and hasattr(testloader_iter, "close"):
-        testloader_iter.close()
 
     log_callback(callbacks, "on_test_end", model=model, num_batches=len(testloader))
