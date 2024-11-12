@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader
 from torch.optim import Optimizer
 from torch.nn import Module as Model
 from torch.nn.modules.loss import _Loss as Criterion
+from torch.cuda.amp import autocast, GradScaler
 from .callback_list import CallbackList
 
 
@@ -25,6 +26,7 @@ def _process_batch(
     model: Model,
     criterion: Criterion,
     callbacks: CallbackList,
+    scaler: Optional[GradScaler] = None,
 ) -> float:
     PHASE: str = "train" if optimizer else "validation"
 
@@ -33,18 +35,19 @@ def _process_batch(
     if optimizer:
         optimizer.zero_grad()
 
-    outputs: Tensor = model(inputs)
-    log_callback(callbacks, "on_forward_end", phase=PHASE, outputs=outputs)
-
-    loss: Tensor = criterion(outputs, labels)
-    log_callback(callbacks, "on_loss_computed", phase=PHASE, loss=loss.item())
+    with autocast(enabled=scaler is not None):
+        outputs: Tensor = model(inputs)
+        loss: Tensor = criterion(outputs, labels)
 
     if optimizer:
-        log_callback(callbacks, "on_backward_start", phase=PHASE, loss=loss.item())
-        loss.backward()
-        log_callback(callbacks, "on_backward_end", phase=PHASE)
+        if scaler:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
-        optimizer.step()
         log_callback(
             callbacks,
             "on_optimizer_step",
@@ -104,6 +107,7 @@ def _process_epoch(
     optimizer: Optional[Optimizer] = None,
     show_progress: bool = False,
     epoch: int = 0,
+    scaler: Optional[GradScaler] = None,
 ) -> float:
     PHASE: str = "train" if optimizer else "validation"
 
@@ -121,7 +125,7 @@ def _process_epoch(
         for batch_idx, batch in enumerate(dataloader_iter):
             inputs, labels = batch[0].to(device), batch[1].to(device)
             batch_loss = _process_batch(
-                inputs, labels, optimizer, model, criterion, callbacks
+                inputs, labels, optimizer, model, criterion, callbacks, scaler=scaler
             )
             total_loss += batch_loss
 
@@ -177,8 +181,10 @@ def train_val_loop(
     validation_dataloader: Optional[DataLoader] = None,
     show_progress: bool = False,
     resume_from_checkpoint: Optional[str] = None,
+    use_mixed_precision: bool = False,
 ) -> None:
     start_epoch: int = 0
+    scaler = GradScaler() if use_mixed_precision else None
 
     if resume_from_checkpoint:
         try:
@@ -186,6 +192,8 @@ def train_val_loop(
             model.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             start_epoch = checkpoint["epoch"] + 1
+            if scaler and "scaler_state_dict" in checkpoint:
+                scaler.load_state_dict(checkpoint["scaler_state_dict"])
             log_callback(
                 callbacks, "on_checkpoint_load", success=True, epoch=start_epoch
             )
@@ -225,6 +233,7 @@ def train_val_loop(
             optimizer=optimizer,
             show_progress=show_progress,
             epoch=epoch,
+            scaler=scaler,
         )
 
         if validation_dataloader:
@@ -237,6 +246,7 @@ def train_val_loop(
                 optimizer=None,
                 show_progress=show_progress,
                 epoch=epoch,
+                scaler=None,
             )
 
         log_callback(
@@ -245,6 +255,7 @@ def train_val_loop(
             model=model,
             optimizer=optimizer,
             epoch=epoch,
+            scaler_state_dict=(scaler.state_dict() if scaler else None),
         )
 
     log_callback(callbacks, "on_train_end")
