@@ -7,7 +7,7 @@ from torch.optim import Optimizer
 from torch.nn import Module as Model
 from torch.nn.modules.loss import _Loss as Criterion
 from torch.cuda.amp import autocast, GradScaler
-from .callback_list import CallbackList
+from .callback.callback_list import CallbackList
 
 
 class StopTrainingException(Exception):
