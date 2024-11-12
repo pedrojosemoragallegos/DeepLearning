@@ -184,7 +184,7 @@ def train_val_loop(
     use_mixed_precision: bool = False,
 ) -> None:
     start_epoch: int = 0
-    scaler = GradScaler() if use_mixed_precision else None
+    scaler: GradScaler = GradScaler() if use_mixed_precision else None
 
     if resume_from_checkpoint:
         try:
