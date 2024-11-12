@@ -1,12 +1,14 @@
 from typing import List, Optional, Callable, Dict, Any
+from abc import ABC, abstractmethod
 
 
-class Callback:
+class Callback(ABC):
     """
     Base class for defining callbacks that can be used during training, validation, and testing.
     Subclasses can override these methods to customize behavior at specific points in the training loop.
     """
 
+    @abstractmethod
     def on_batch_start(self, batch: int, logs: Optional[Dict[str, Any]] = None) -> None:
         """
         Called at the start of a batch.
@@ -17,6 +19,7 @@ class Callback:
         """
         pass
 
+    @abstractmethod
     def on_batch_end(self, batch: int, logs: Optional[Dict[str, Any]] = None) -> None:
         """
         Called at the end of a batch.
@@ -27,6 +30,7 @@ class Callback:
         """
         pass
 
+    @abstractmethod
     def on_epoch_start(self, epoch: int, logs: Optional[Dict[str, Any]] = None) -> None:
         """
         Called at the start of an epoch.
@@ -37,6 +41,7 @@ class Callback:
         """
         pass
 
+    @abstractmethod
     def on_epoch_end(self, epoch: int, logs: Optional[Dict[str, Any]] = None) -> None:
         """
         Called at the end of an epoch.
@@ -47,6 +52,7 @@ class Callback:
         """
         pass
 
+    @abstractmethod
     def on_train_start(self, logs: Optional[Dict[str, Any]] = None) -> None:
         """
         Called at the start of training.
@@ -56,6 +62,7 @@ class Callback:
         """
         pass
 
+    @abstractmethod
     def on_train_end(self, logs: Optional[Dict[str, Any]] = None) -> None:
         """
         Called at the end of training.
@@ -65,6 +72,7 @@ class Callback:
         """
         pass
 
+    @abstractmethod
     def on_validation_start(self, logs: Optional[Dict[str, Any]] = None) -> None:
         """
         Called at the start of validation.
@@ -74,6 +82,7 @@ class Callback:
         """
         pass
 
+    @abstractmethod
     def on_validation_end(self, logs: Optional[Dict[str, Any]] = None) -> None:
         """
         Called at the end of validation.
@@ -83,6 +92,7 @@ class Callback:
         """
         pass
 
+    @abstractmethod
     def on_test_start(self, logs: Optional[Dict[str, Any]] = None) -> None:
         """
         Called at the start of testing.
@@ -92,6 +102,7 @@ class Callback:
         """
         pass
 
+    @abstractmethod
     def on_test_end(self, logs: Optional[Dict[str, Any]] = None) -> None:
         """
         Called at the end of testing.
@@ -107,6 +118,7 @@ class CallbackList:
     A container for managing multiple callbacks. It forwards method calls to all callbacks in the list.
     """
 
+    @abstractmethod
     def __init__(self, callbacks: Optional[List[Callback]] = None) -> None:
         """
         Initializes the CallbackList.
@@ -116,6 +128,7 @@ class CallbackList:
         """
         self.callbacks: List[Callback] = callbacks if callbacks else []
 
+    @abstractmethod
     def __getattr__(self, name: str) -> Callable[..., None]:
         """
         Dynamically routes method calls to all callbacks that implement the given method.
