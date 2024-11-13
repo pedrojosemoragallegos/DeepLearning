@@ -1,6 +1,7 @@
 from tqdm.auto import tqdm
 from typing import Optional, Dict, Any
 from .callback import Callback
+from torch.utils.data import DataLoader
 
 
 class ProgressBarCallback(Callback):
@@ -10,7 +11,7 @@ class ProgressBarCallback(Callback):
         self._validation_progress_bar: Optional[tqdm] = None
 
     def on_train_start(self, **kwargs: Dict[str, Any]) -> None:
-        num_epochs = kwargs.get("num_epochs")
+        num_epochs: int = kwargs.get("num_epochs")
 
         assert (
             num_epochs is not None
@@ -25,10 +26,10 @@ class ProgressBarCallback(Callback):
         )
 
     def on_epoch_start(self, **kwargs: Dict[str, Any]) -> None:
-        dataloader = kwargs.get("dataloader")
-        epoch_num = kwargs.get("epoch_num")
+        dataloader: DataLoader = kwargs.get("dataloader")
+        epoch_num: int = kwargs.get("epoch_num")
 
-        total_batches = len(dataloader)
+        total_batches: int = len(dataloader)
 
         assert total_batches > 0, "Dataloader has no batches!"
 
@@ -55,13 +56,13 @@ class ProgressBarCallback(Callback):
             self._batch_progress_bar.update(1)
 
     def on_validation_start(self, **kwargs: Dict[str, Any]) -> None:
-        dataloader = kwargs.get("dataloader")
+        dataloader: DataLoader = kwargs.get("dataloader")
 
         assert (
             dataloader is not None
         ), "Expected 'dataloader' in kwargs for on_validation_start"
 
-        total_batches = len(dataloader)
+        total_batches: int = len(dataloader)
         if self._validation_progress_bar:
             self._validation_progress_bar.close()
 

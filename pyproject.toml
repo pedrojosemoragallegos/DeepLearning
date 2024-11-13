@@ -16,3 +16,7 @@ ipywidgets = "^8.1.5"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+
+[tool.ruff]
+extend-select = ["M"]  # Enable Mypy (type checking)

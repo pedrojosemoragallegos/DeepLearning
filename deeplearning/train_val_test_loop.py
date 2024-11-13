@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 import torch
 from torch import device as Device
 from torch import Tensor
@@ -185,6 +185,30 @@ def validation_loop(
     return cumulative_loss
 
 
+def _load_checkpoint(
+    model: Model,
+    optimizer: Optimizer,
+    resume_from_checkpoint: str,
+    scaler: Optional[GradScaler] = None,
+) -> Tuple[int, Optional[GradScaler]]:
+    try:
+        checkpoint = torch.load(resume_from_checkpoint)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = checkpoint["epoch"] + 1
+
+        if scaler and "scaler_state_dict" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler_state_dict"])
+
+        return start_epoch, scaler
+    except FileNotFoundError:
+        raise FileNotFoundError(f"No checkpoint found at {resume_from_checkpoint}.")
+    except KeyError as e:
+        raise KeyError(f"Checkpoint missing key: {e}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to load checkpoint: {e}")
+
+
 def train_val_loop(
     train_dataloader: DataLoader,
     device: Device,
@@ -198,55 +222,31 @@ def train_val_loop(
     use_mixed_precision: bool = False,
 ) -> None:
     start_epoch: int = 0
-    scaler: GradScaler = GradScaler() if use_mixed_precision else None
+    scaler: Optional[GradScaler] = GradScaler() if use_mixed_precision else None
 
     if resume_from_checkpoint:
         try:
-            checkpoint = torch.load(resume_from_checkpoint)
-            model.load_state_dict(checkpoint["model_state_dict"])
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            start_epoch = checkpoint["epoch"] + 1
-
-            if scaler and "scaler_state_dict" in checkpoint:
-                scaler.load_state_dict(checkpoint["scaler_state_dict"])
-
+            start_epoch, scaler = _load_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                resume_from_checkpoint=resume_from_checkpoint,
+                scaler=scaler,
+            )
             log_callback(
                 callbacks,
                 "on_checkpoint_load",
                 success=True,
-                scaler=scaler,
                 epoch_num=start_epoch,
-                device=device,
-                criterion=criterion,
-                optimizer=optimizer,
-                num_epochs=num_epochs,
-                dataloader=validation_dataloader,
                 resume_from_checkpoint=resume_from_checkpoint,
-                use_mixed_precision=use_mixed_precision,
             )
-        except FileNotFoundError:
-            log_callback(
-                callbacks,
-                "on_checkpoint_load",
-                success=False,
-                message="No checkpoint found.",
-            )
-        except KeyError as e:
-            log_callback(
-                callbacks,
-                "on_checkpoint_load",
-                success=False,
-                message=f"Checkpoint missing key: {e}",
-            )
-            raise KeyError(f"Checkpoint missing key: {e}")
         except Exception as e:
             log_callback(
                 callbacks,
                 "on_checkpoint_load",
                 success=False,
-                message=f"Failed to load checkpoint: {e}",
+                message=str(e),
             )
-            raise RuntimeError(f"Failed to load checkpoint: {e}")
+            raise
 
     log_callback(
         callbacks,
