@@ -1,5 +1,5 @@
 from tqdm.auto import tqdm
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, cast
 from .callback import Callback
 from torch.utils.data import DataLoader
 
@@ -11,7 +11,7 @@ class ProgressBarCallback(Callback):
         self._validation_progress_bar: Optional[tqdm] = None
 
     def on_train_start(self, **kwargs: Dict[str, Any]) -> None:
-        num_epochs: int = kwargs.get("num_epochs")
+        num_epochs: int = cast(int, kwargs.get("num_epochs"))
 
         assert (
             num_epochs is not None
@@ -26,8 +26,8 @@ class ProgressBarCallback(Callback):
         )
 
     def on_epoch_start(self, **kwargs: Dict[str, Any]) -> None:
-        dataloader: DataLoader = kwargs.get("dataloader")
-        epoch_num: int = kwargs.get("epoch_num")
+        dataloader: DataLoader = cast(DataLoader, kwargs.get("dataloader"))
+        epoch_num: int = cast(int, kwargs.get("epoch_num"))
 
         total_batches: int = len(dataloader)
 
@@ -56,7 +56,7 @@ class ProgressBarCallback(Callback):
             self._batch_progress_bar.update(1)
 
     def on_validation_start(self, **kwargs: Dict[str, Any]) -> None:
-        dataloader: DataLoader = kwargs.get("dataloader")
+        dataloader: DataLoader = cast(DataLoader, kwargs.get("dataloader"))
 
         assert (
             dataloader is not None
