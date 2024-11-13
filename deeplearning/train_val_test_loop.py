@@ -15,7 +15,7 @@ class StopTrainingException(Exception):
 
 
 def log_callback(callbacks: CallbackList, method: str, **kwargs):
-    getattr(callbacks, method)(logs=kwargs)
+    getattr(callbacks, method)(kwargs)
 
 
 def _process_batch(
@@ -27,12 +27,19 @@ def _process_batch(
     callbacks: CallbackList,
     scaler: Optional[GradScaler] = None,
 ) -> float:
-    PHASE: str = "train" if optimizer else "validation"
-
-    log_callback(callbacks, "on_batch_start", phase=PHASE, inputs=inputs, labels=labels)
-
-    if optimizer:
+    if optimizer.zero_grad():
         optimizer.zero_grad()
+
+    log_callback(
+        callbacks,
+        "on_train_batch_start" if optimizer else "on_val_batch_start",
+        inputs=inputs,
+        labels=labels,
+        model=model,
+        optimizer=optimizer,
+        criterion=criterion,
+        scalar=scaler,
+    )
 
     with autocast(enabled=scaler is not None):
         outputs: Tensor = model(inputs)
@@ -47,21 +54,19 @@ def _process_batch(
             loss.backward()
             optimizer.step()
 
+    if optimizer:
         log_callback(
             callbacks,
-            "on_optimizer_step",
-            phase=PHASE,
-            updated_parameters=[p for p in model.parameters() if p.grad is not None],
+            "on_train_batch_end" if optimizer else "on_val_batch_end",
+            inputs=inputs,
+            labels=labels,
+            outputs=outputs,
+            loss=loss.item(),
+            model=model,
+            optimizer=optimizer,
+            criterion=criterion,
+            scalar=scaler,
         )
-
-    log_callback(
-        callbacks,
-        "on_batch_end",
-        phase=PHASE,
-        loss=loss.item(),
-        outputs=outputs,
-        labels=labels,
-    )
 
     return loss.item()
 
@@ -76,11 +81,21 @@ def _batch_loop(
     optimizer: Optional[Optimizer] = None,
     scaler: Optional[GradScaler] = None,
 ) -> float:
-    PHASE: str = "train" if optimizer else "validation"
-
     for batch_idx, batch in enumerate(dataloader):
         inputs: Tensor = batch[0].to(device)
         labels: Tensor = batch[1].to(device)
+
+        log_callback(
+            callbacks,
+            "on_train_batch_start" if optimizer else "on_val_batch_start",
+            device=device,
+            total_loss=total_loss,
+            model=model,
+            criterion=criterion,
+            optimizer=optimizer,
+            scaler=scaler,
+            batch_index=batch_idx,
+        )
 
         batch_loss: float = _process_batch(
             inputs, labels, optimizer, model, criterion, callbacks, scaler
@@ -89,11 +104,15 @@ def _batch_loop(
 
         log_callback(
             callbacks,
-            "on_batch_start",
-            phase=PHASE,
-            batch_idx=batch_idx,
-            loss=batch_loss,
-            total_batches=len(dataloader),
+            "on_train_batch_end" if optimizer else "on_val_batch_end",
+            device=device,
+            total_loss=total_loss,
+            batch_loss=batch_loss,
+            model=model,
+            criterion=criterion,
+            optimizer=optimizer,
+            scaler=scaler,
+            batch_index=batch_idx,
         )
 
     return total_loss
@@ -106,34 +125,43 @@ def _process_epoch(
     criterion: Criterion,
     callbacks: CallbackList,
     optimizer: Optional[Optimizer] = None,
-    epoch: int = 0,
+    epoch_num: int = 0,
     scaler: Optional[GradScaler] = None,
 ) -> float:
-    PHASE: str = "train" if optimizer else "validation"
+    model.train() if optimizer else model.eval()
 
     log_callback(
         callbacks,
         "on_epoch_start",
-        phase=PHASE,
-        epoch=epoch,
-        total_batches=len(dataloader),
+        epoch_num=epoch_num,
+        device=device,
+        model=model,
+        criterion=criterion,
+        optimizer=optimizer,
+        scaler=scaler,
     )
 
-    model.train() if optimizer else model.eval()
-
     total_loss: float = _batch_loop(
-        dataloader,
-        device,
-        0.0,
-        model,
-        criterion,
-        callbacks,
+        dataloader=dataloader,
+        device=device,
+        total_loss=0.0,
+        model=model,
+        criterion=criterion,
+        callbacks=callbacks,
         optimizer=optimizer,
         scaler=scaler,
     )
 
     log_callback(
-        callbacks, "on_epoch_end", phase=PHASE, total_loss=total_loss, epoch=epoch
+        callbacks,
+        "on_epoch_end",
+        epoch_num=epoch_num,
+        device=device,
+        model=model,
+        criterion=criterion,
+        optimizer=optimizer,
+        scaler=scaler,
+        total_loss=total_loss,
     )
 
     return total_loss
@@ -149,7 +177,14 @@ def validation_loop(
 ) -> float:
     model.eval()
 
-    log_callback(callbacks, "on_validation_start", cumulative_loss=cumulative_loss)
+    log_callback(
+        callbacks,
+        "on_validation_start",
+        cumulative_loss=cumulative_loss,
+        device=device,
+        model=model,
+        criterion=criterion,
+    )
 
     with torch.no_grad():
         cumulative_loss = _batch_loop(
@@ -163,7 +198,14 @@ def validation_loop(
             scaler=None,
         )
 
-    log_callback(callbacks, "on_validation_end", cumulative_loss=cumulative_loss)
+    log_callback(
+        callbacks,
+        "on_validation_end",
+        cumulative_loss=cumulative_loss,
+        device=device,
+        model=model,
+        criterion=criterion,
+    )
 
     return cumulative_loss
 
@@ -194,7 +236,18 @@ def train_val_loop(
                 scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
             log_callback(
-                callbacks, "on_checkpoint_load", success=True, epoch=start_epoch
+                callbacks,
+                "on_checkpoint_load",
+                success=True,
+                scaler=scaler,
+                epoch_num=start_epoch,
+                device=device,
+                criterion=criterion,
+                optimizer=optimizer,
+                num_epochs=num_epochs,
+                validation_dataloader=validation_dataloader,
+                resume_from_checkpoint=resume_from_checkpoint,
+                use_mixed_precision=use_mixed_precision,
             )
         except FileNotFoundError:
             log_callback(
@@ -220,7 +273,18 @@ def train_val_loop(
             )
             raise RuntimeError(f"Failed to load checkpoint: {e}")
 
-    log_callback(callbacks, "on_train_start", num_epochs=num_epochs)
+    log_callback(
+        callbacks,
+        "on_train_start",
+        num_epochs=num_epochs,
+        epoch_num=start_epoch,
+        device=device,
+        criterion=criterion,
+        optimizer=optimizer,
+        validation_dataloader=validation_dataloader,
+        resume_from_checkpoint=resume_from_checkpoint,
+        use_mixed_precision=use_mixed_precision,
+    )
 
     for epoch in range(start_epoch, num_epochs):
         _process_epoch(
@@ -249,13 +313,28 @@ def train_val_loop(
         log_callback(
             callbacks,
             "on_checkpoint_save",
-            model=model,
+            num_epochs=num_epochs,
+            epoch_num=start_epoch,
+            device=device,
+            criterion=criterion,
             optimizer=optimizer,
-            epoch=epoch,
-            scaler_state_dict=(scaler.state_dict() if scaler else None),
+            validation_dataloader=validation_dataloader,
+            resume_from_checkpoint=resume_from_checkpoint,
+            use_mixed_precision=use_mixed_precision,
         )
 
-    log_callback(callbacks, "on_train_end")
+    log_callback(
+        callbacks,
+        "on_train_end",
+        num_epochs=num_epochs,
+        epoch_num=start_epoch,
+        device=device,
+        criterion=criterion,
+        optimizer=optimizer,
+        validation_dataloader=validation_dataloader,
+        resume_from_checkpoint=resume_from_checkpoint,
+        use_mixed_precision=use_mixed_precision,
+    )
 
 
 def test_loop(
@@ -273,7 +352,13 @@ def test_loop(
     with torch.no_grad():
         for batch_idx, batch in enumerate(testloader):
             log_callback(
-                callbacks, "on_test_batch_start", batch_idx=batch_idx, batch=batch
+                callbacks,
+                "on_test_batch_start",
+                batch_index=batch_idx,
+                batch=batch,
+                dataloader=testloader,
+                model=model,
+                device=device,
             )
 
             inputs: Tensor = batch[0].to(device)
@@ -283,10 +368,23 @@ def test_loop(
             log_callback(
                 callbacks,
                 "on_test_batch_end",
-                batch_idx=batch_idx,
-                inputs=inputs,
+                batch_index=batch_idx,
+                batch=batch,
+                dataloader=testloader,
+                model=model,
+                device=device,
                 labels=labels,
                 predictions=predictions,
             )
 
-    log_callback(callbacks, "on_test_end", model=model, num_batches=len(testloader))
+    log_callback(
+        callbacks,
+        "on_test_end",
+        model=model,
+        batch_index=batch_idx,
+        batch=batch,
+        dataloader=testloader,
+        device=device,
+        labels=labels,
+        predictions=predictions,
+    )
