@@ -15,7 +15,7 @@ class StopTrainingException(Exception):
 
 
 def log_callback(callbacks: CallbackList, method: str, **kwargs):
-    getattr(callbacks, method)(kwargs)
+    getattr(callbacks, method)(**kwargs)
 
 
 def _process_batch(
@@ -27,7 +27,7 @@ def _process_batch(
     callbacks: CallbackList,
     scaler: Optional[GradScaler] = None,
 ) -> float:
-    if optimizer.zero_grad():
+    if optimizer:
         optimizer.zero_grad()
 
     log_callback(
@@ -294,7 +294,7 @@ def train_val_loop(
             criterion,
             callbacks,
             optimizer=optimizer,
-            epoch=epoch,
+            epoch_num=epoch,
             scaler=scaler,
         )
 
@@ -306,7 +306,7 @@ def train_val_loop(
                 criterion,
                 callbacks,
                 optimizer=None,
-                epoch=epoch,
+                epoch_num=epoch,
                 scaler=None,
             )
 
