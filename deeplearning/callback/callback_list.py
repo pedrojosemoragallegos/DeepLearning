@@ -11,10 +11,10 @@ class CallbackList:
 
     @abstractmethod
     def __getattr__(self, name: str) -> Callable[..., None]:
-        def wrapper(*args: Any, **kwargs: Any) -> None:
+        def wrapper(**kwargs: Any) -> None:
             for callback in self.callbacks:
                 method: Optional[Callable[..., None]] = getattr(callback, name, None)
                 if method:
-                    method(*args, **kwargs)
+                    method(**kwargs)
 
         return wrapper
