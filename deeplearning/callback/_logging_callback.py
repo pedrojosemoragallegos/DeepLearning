@@ -14,11 +14,11 @@ class _LoggingCallback(Callback):
     def on_train_batch_end(self, **kwargs) -> None:
         self._log_state("on_train_batch_end", **kwargs)
 
-    def on_val_batch_start(self, **kwargs) -> None:
-        self._log_state("on_val_batch_start", **kwargs)
+    def on_validation_batch_start(self, **kwargs) -> None:
+        self._log_state("on_validation_batch_start", **kwargs)
 
-    def on_val_batch_end(self, **kwargs) -> None:
-        self._log_state("on_val_batch_end", **kwargs)
+    def on_validation_batch_end(self, **kwargs) -> None:
+        self._log_state("on_validation_batch_end", **kwargs)
 
     def on_epoch_start(self, **kwargs) -> None:
         self._log_state("on_epoch_start", **kwargs)

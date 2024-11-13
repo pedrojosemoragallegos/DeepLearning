@@ -32,7 +32,7 @@ def _process_batch(
 
     log_callback(
         callbacks,
-        "on_train_batch_start" if optimizer else "on_val_batch_start",
+        "on_train_batch_start" if optimizer else "on_validation_batch_start",
         inputs=inputs,
         labels=labels,
         model=model,
@@ -54,19 +54,18 @@ def _process_batch(
             loss.backward()
             optimizer.step()
 
-    if optimizer:
-        log_callback(
-            callbacks,
-            "on_train_batch_end" if optimizer else "on_val_batch_end",
-            inputs=inputs,
-            labels=labels,
-            outputs=outputs,
-            loss=loss.item(),
-            model=model,
-            optimizer=optimizer,
-            criterion=criterion,
-            scalar=scaler,
-        )
+    log_callback(
+        callbacks,
+        "on_train_batch_end" if optimizer else "on_validation_batch_end",
+        inputs=inputs,
+        labels=labels,
+        outputs=outputs,
+        loss=loss.item(),
+        model=model,
+        optimizer=optimizer,
+        criterion=criterion,
+        scalar=scaler,
+    )
 
     return loss.item()
 
@@ -85,35 +84,10 @@ def _batch_loop(
         inputs: Tensor = batch[0].to(device)
         labels: Tensor = batch[1].to(device)
 
-        log_callback(
-            callbacks,
-            "on_train_batch_start" if optimizer else "on_val_batch_start",
-            device=device,
-            total_loss=total_loss,
-            model=model,
-            criterion=criterion,
-            optimizer=optimizer,
-            scaler=scaler,
-            batch_index=batch_idx,
-        )
-
         batch_loss: float = _process_batch(
             inputs, labels, optimizer, model, criterion, callbacks, scaler
         )
         total_loss += batch_loss
-
-        log_callback(
-            callbacks,
-            "on_train_batch_end" if optimizer else "on_val_batch_end",
-            device=device,
-            total_loss=total_loss,
-            batch_loss=batch_loss,
-            model=model,
-            criterion=criterion,
-            optimizer=optimizer,
-            scaler=scaler,
-            batch_index=batch_idx,
-        )
 
     return total_loss
 
@@ -133,6 +107,7 @@ def _process_epoch(
     log_callback(
         callbacks,
         "on_epoch_start",
+        dataloader=dataloader,
         epoch_num=epoch_num,
         device=device,
         model=model,
@@ -180,6 +155,7 @@ def validation_loop(
     log_callback(
         callbacks,
         "on_validation_start",
+        dataloader=dataloader,
         cumulative_loss=cumulative_loss,
         device=device,
         model=model,
@@ -194,13 +170,12 @@ def validation_loop(
             model,
             criterion,
             callbacks,
-            optimizer=None,
-            scaler=None,
         )
 
     log_callback(
         callbacks,
         "on_validation_end",
+        dataloader=dataloader,
         cumulative_loss=cumulative_loss,
         device=device,
         model=model,
@@ -245,7 +220,7 @@ def train_val_loop(
                 criterion=criterion,
                 optimizer=optimizer,
                 num_epochs=num_epochs,
-                validation_dataloader=validation_dataloader,
+                dataloader=validation_dataloader,
                 resume_from_checkpoint=resume_from_checkpoint,
                 use_mixed_precision=use_mixed_precision,
             )
@@ -276,6 +251,7 @@ def train_val_loop(
     log_callback(
         callbacks,
         "on_train_start",
+        dataLoader=train_dataloader,
         num_epochs=num_epochs,
         epoch_num=start_epoch,
         device=device,
@@ -299,15 +275,12 @@ def train_val_loop(
         )
 
         if validation_dataloader:
-            _process_epoch(
-                validation_dataloader,
-                device,
-                model,
-                criterion,
-                callbacks,
-                optimizer=None,
-                epoch_num=epoch,
-                scaler=None,
+            validation_loop(
+                dataloader=validation_dataloader,
+                device=device,
+                model=model,
+                criterion=criterion,
+                callbacks=callbacks,
             )
 
         log_callback(
@@ -318,7 +291,7 @@ def train_val_loop(
             device=device,
             criterion=criterion,
             optimizer=optimizer,
-            validation_dataloader=validation_dataloader,
+            dataloader=validation_dataloader,
             resume_from_checkpoint=resume_from_checkpoint,
             use_mixed_precision=use_mixed_precision,
         )
@@ -331,7 +304,7 @@ def train_val_loop(
         device=device,
         criterion=criterion,
         optimizer=optimizer,
-        validation_dataloader=validation_dataloader,
+        dataloader=train_dataloader,
         resume_from_checkpoint=resume_from_checkpoint,
         use_mixed_precision=use_mixed_precision,
     )
