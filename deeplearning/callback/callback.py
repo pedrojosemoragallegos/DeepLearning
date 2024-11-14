@@ -43,3 +43,6 @@ class Callback:
 
     def on_test_batch_end(self, **kwargs):
         pass
+
+    def on_train_interrupt(self, **kwargs):
+        pass
