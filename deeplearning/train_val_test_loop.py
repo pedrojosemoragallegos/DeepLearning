@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional
 import torch
 from torch import device as Device
 from torch import Tensor
@@ -8,10 +8,6 @@ from torch.nn import Module as Model
 from torch.nn.modules.loss import _Loss as Criterion
 from torch.cuda.amp import autocast, GradScaler
 from .callback.callback_list import CallbackList
-
-
-class StopTrainingException(Exception):
-    pass
 
 
 def log_callback(callbacks: CallbackList, method: str, **kwargs):
@@ -35,8 +31,8 @@ def _process_batch(
         "on_train_batch_start" if optimizer else "on_validation_batch_start",
         inputs=inputs,
         labels=labels,
-        model=model,
         optimizer=optimizer,
+        model=model,
         criterion=criterion,
         scalar=scaler,
     )
@@ -79,8 +75,14 @@ def _batch_loop(
     callbacks: CallbackList,
     optimizer: Optional[Optimizer] = None,
     scaler: Optional[GradScaler] = None,
+    start_step: int = 0,
 ) -> float:
-    for batch_idx, batch in enumerate(dataloader):
+    for batch_idx, batch in enumerate(
+        dataloader
+    ):  # TODO use itertools islice to avoid unnecesary iterations
+        if batch_idx < start_step:
+            continue
+
         inputs: Tensor = batch[0].to(device)
         labels: Tensor = batch[1].to(device)
 
@@ -101,6 +103,7 @@ def _process_epoch(
     optimizer: Optional[Optimizer] = None,
     epoch_num: int = 0,
     scaler: Optional[GradScaler] = None,
+    start_step: int = 0,
 ) -> float:
     model.train() if optimizer else model.eval()
 
@@ -114,6 +117,7 @@ def _process_epoch(
         criterion=criterion,
         optimizer=optimizer,
         scaler=scaler,
+        start_step=start_step,
     )
 
     total_loss: float = _batch_loop(
@@ -125,6 +129,7 @@ def _process_epoch(
         callbacks=callbacks,
         optimizer=optimizer,
         scaler=scaler,
+        start_step=start_step,
     )
 
     log_callback(
@@ -137,6 +142,7 @@ def _process_epoch(
         optimizer=optimizer,
         scaler=scaler,
         total_loss=total_loss,
+        start_step=start_step,
     )
 
     return total_loss
@@ -185,30 +191,6 @@ def validation_loop(
     return cumulative_loss
 
 
-def _load_checkpoint(
-    model: Model,
-    optimizer: Optimizer,
-    resume_from_checkpoint: str,
-    scaler: Optional[GradScaler] = None,
-) -> Tuple[int, Optional[GradScaler]]:
-    try:
-        checkpoint = torch.load(resume_from_checkpoint)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        start_epoch = checkpoint["epoch"] + 1
-
-        if scaler and "scaler_state_dict" in checkpoint:
-            scaler.load_state_dict(checkpoint["scaler_state_dict"])
-
-        return start_epoch, scaler
-    except FileNotFoundError:
-        raise FileNotFoundError(f"No checkpoint found at {resume_from_checkpoint}.")
-    except KeyError as e:
-        raise KeyError(f"Checkpoint missing key: {e}")
-    except Exception as e:
-        raise RuntimeError(f"Failed to load checkpoint: {e}")
-
-
 def train_val_loop(
     train_dataloader: DataLoader,
     device: Device,
@@ -218,36 +200,10 @@ def train_val_loop(
     callbacks: CallbackList,
     num_epochs: int,
     validation_dataloader: Optional[DataLoader] = None,
-    resume_from_checkpoint: Optional[str] = None,
-    use_mixed_precision: bool = False,
-) -> None:
-    start_epoch: int = 0
-    scaler: Optional[GradScaler] = GradScaler() if use_mixed_precision else None
-
-    if resume_from_checkpoint:
-        try:
-            start_epoch, scaler = _load_checkpoint(
-                model=model,
-                optimizer=optimizer,
-                resume_from_checkpoint=resume_from_checkpoint,
-                scaler=scaler,
-            )
-            log_callback(
-                callbacks,
-                "on_checkpoint_load",
-                success=True,
-                epoch_num=start_epoch,
-                resume_from_checkpoint=resume_from_checkpoint,
-            )
-        except Exception as e:
-            log_callback(
-                callbacks,
-                "on_checkpoint_load",
-                success=False,
-                message=str(e),
-            )
-            raise
-
+    start_epoch: int = 0,
+    start_step: int = 0,  # type: ignore
+    scaler: Optional[GradScaler] = None,
+):
     log_callback(
         callbacks,
         "on_train_start",
@@ -258,8 +214,6 @@ def train_val_loop(
         criterion=criterion,
         optimizer=optimizer,
         validation_dataloader=validation_dataloader,
-        resume_from_checkpoint=resume_from_checkpoint,
-        use_mixed_precision=use_mixed_precision,
     )
 
     for epoch in range(start_epoch, num_epochs):
@@ -272,7 +226,10 @@ def train_val_loop(
             optimizer=optimizer,
             epoch_num=epoch,
             scaler=scaler,
+            start_step=start_step if epoch == start_epoch else 0,
         )
+
+        start_step: int = 0
 
         if validation_dataloader:
             validation_loop(
@@ -283,19 +240,6 @@ def train_val_loop(
                 callbacks=callbacks,
             )
 
-        log_callback(
-            callbacks,
-            "on_checkpoint_save",
-            num_epochs=num_epochs,
-            epoch_num=start_epoch,
-            device=device,
-            criterion=criterion,
-            optimizer=optimizer,
-            dataloader=validation_dataloader,
-            resume_from_checkpoint=resume_from_checkpoint,
-            use_mixed_precision=use_mixed_precision,
-        )
-
     log_callback(
         callbacks,
         "on_train_end",
@@ -305,8 +249,6 @@ def train_val_loop(
         criterion=criterion,
         optimizer=optimizer,
         dataloader=train_dataloader,
-        resume_from_checkpoint=resume_from_checkpoint,
-        use_mixed_precision=use_mixed_precision,
     )
 
 
@@ -354,10 +296,6 @@ def test_loop(
         callbacks,
         "on_test_end",
         model=model,
-        batch_index=batch_idx,
-        batch=batch,
         dataloader=testloader,
         device=device,
-        labels=labels,
-        predictions=predictions,
     )
