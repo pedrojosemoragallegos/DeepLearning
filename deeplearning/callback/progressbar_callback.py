@@ -1,20 +1,17 @@
-from tqdm.auto import tqdm
+from tqdm.autonotebook import tqdm
 from typing import Optional, Dict, Any, cast
 from .callback import Callback
 from torch.utils.data import DataLoader
 
 
 class ProgressBarCallback(Callback):
-    def __init__(self) -> None:
+    def __init__(self):
         self._train_progress_bar: Optional[tqdm] = None
         self._batch_progress_bar: Optional[tqdm] = None
         self._validation_progress_bar: Optional[tqdm] = None
 
-    def on_train_start(self, **kwargs: Dict[str, Any]) -> None:
-        num_epochs: int = cast(int, kwargs.get("num_epochs"))
-        assert (
-            num_epochs is not None
-        ), "Expected 'num_epochs' in kwargs for on_train_start"
+    def on_train_start(self, **kwargs: Dict[str, Any]):
+        num_epochs: int = kwargs.get("num_epochs")  # type: ignore
 
         self._train_progress_bar = tqdm(
             total=num_epochs,
@@ -24,15 +21,14 @@ class ProgressBarCallback(Callback):
             unit="epoch",
         )
 
-    def on_epoch_start(self, **kwargs: Dict[str, Any]) -> None:
+    def on_train_epoch_start(self, **kwargs: Dict[str, Any]):
         dataloader: DataLoader = cast(DataLoader, kwargs.get("dataloader"))
         epoch_num: int = cast(int, kwargs.get("epoch_num"))
         total_batches: int = len(dataloader)
 
-        assert total_batches > 0, "Dataloader has no batches!"
-
         if self._batch_progress_bar:
-            self._batch_progress_bar.close()
+            self._batch_progress_bar.close()  # type: ignore
+            self._batch_progress_bar = None
 
         self._batch_progress_bar = tqdm(
             total=total_batches,
@@ -42,26 +38,17 @@ class ProgressBarCallback(Callback):
             unit="batch",
         )
 
-    def on_epoch_end(self, **kwargs: Dict[str, Any]) -> None:
-        if self._batch_progress_bar:
-            self._batch_progress_bar.close()
-        if self._train_progress_bar:
-            self._train_progress_bar.update(1)
+    def on_train_batch_end(self, **kwargs: Dict[str, Any]):
+        self._batch_progress_bar.update(1)  # type: ignore
 
-    def on_train_batch_end(self, **kwargs: Dict[str, Any]) -> None:
-        if self._batch_progress_bar:
-            self._batch_progress_bar.update(1)
+    def on_train_epoch_end(self, **kwargs: Dict[str, Any]):
+        self._batch_progress_bar.close()  # type: ignore
+        self._batch_progress_bar = None
+        self._train_progress_bar.update(1)  # type: ignore
 
-    def on_validation_start(self, **kwargs: Dict[str, Any]) -> None:
-        dataloader: DataLoader = cast(DataLoader, kwargs.get("dataloader"))
-
-        assert (
-            dataloader is not None
-        ), "Expected 'dataloader' in kwargs for on_validation_start"
-
+    def on_validation_start(self, **kwargs: Dict[str, Any]):
+        dataloader: DataLoader = kwargs.get("dataloader")  # type: ignore
         total_batches: int = len(dataloader)
-        if self._validation_progress_bar:
-            self._validation_progress_bar.close()
 
         self._validation_progress_bar = tqdm(
             total=total_batches,
@@ -71,14 +58,13 @@ class ProgressBarCallback(Callback):
             unit="batch",
         )
 
-    def on_validation_batch_end(self, **kwargs: Dict[str, Any]) -> None:
-        if self._validation_progress_bar:
-            self._validation_progress_bar.update(1)
+    def on_validation_batch_end(self, **kwargs: Dict[str, Any]):
+        self._validation_progress_bar.update(1)  # type: ignore
 
-    def on_validation_end(self, **kwargs: Dict[str, Any]) -> None:
-        if self._validation_progress_bar:
-            self._validation_progress_bar.close()
+    def on_validation_end(self, **kwargs: Dict[str, Any]):
+        self._validation_progress_bar.close()  # type: ignore
+        self._validation_progress_bar = None
 
-    def on_train_end(self, **kwargs: Dict[str, Any]) -> None:
-        if self._train_progress_bar:
-            self._train_progress_bar.close()
+    def on_train_end(self, **kwargs: Dict[str, Any]):
+        self._train_progress_bar.close()  # type: ignore
+        self._train_progress_bar = None

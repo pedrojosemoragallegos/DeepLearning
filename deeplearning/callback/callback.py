@@ -11,10 +11,10 @@ class Callback:
     def on_validation_batch_end(self, **kwargs):
         pass
 
-    def on_epoch_start(self, **kwargs):
+    def on_train_epoch_start(self, **kwargs):
         pass
 
-    def on_epoch_end(self, **kwargs):
+    def on_train_epoch_end(self, **kwargs):
         pass
 
     def on_train_start(self, **kwargs):

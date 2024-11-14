@@ -147,7 +147,7 @@ class Trainer:
         if self._callbacks:
             log_callback(
                 self._callbacks,
-                method="on_epoch_start",
+                method="on_train_epoch_start",
                 **{
                     "epoch_num": self._train_epoch_num,
                     "num_epochs": self._num_epochs,
@@ -165,7 +165,7 @@ class Trainer:
         if self._callbacks:
             log_callback(
                 self._callbacks,
-                method="on_epoch_end",
+                method="on_train_epoch_end",
                 **{
                     "epoch_num": self._train_epoch_num,
                     "train_epoch_loss": self._train_epoch_loss,
@@ -301,20 +301,6 @@ class Trainer:
 
             if self._validation_dataloader:
                 self._validation_loop()
-
-            if self._callbacks:
-                log_callback(
-                    self._callbacks,
-                    method="on_epoch_start",
-                    **{
-                        "epoch_num": self._train_epoch_num,
-                        "num_epochs": self._num_epochs,
-                        "dataloader": self._train_dataloader,  # Pass the dataloader here
-                        "model": self._model,
-                        "optimizer": self._optimizer,
-                        "scaler": self._scaler,
-                    },
-                )
 
         if self._callbacks:
             log_callback(
