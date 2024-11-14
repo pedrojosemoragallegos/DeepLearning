@@ -315,7 +315,21 @@ class Trainer:
             )
 
     def train(self, num_epochs: int):
-        self._train_val_loop(num_epochs=num_epochs)
+        try:
+            self._train_val_loop(num_epochs=num_epochs)
+        except KeyboardInterrupt:
+            if self._callbacks:
+                log_callback(
+                    self._callbacks,
+                    method="on_train_interrupt",
+                    **{
+                        "epoch_num": self._train_epoch_num,
+                        "num_epochs": self._num_epochs,
+                        "model": self._model,
+                        "optimizer": self._optimizer,
+                        "scaler": self._scaler,
+                    },
+                )
 
     def test(self):
         self._test_loop()
