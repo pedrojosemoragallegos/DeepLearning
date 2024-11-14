@@ -1,11 +1,11 @@
-from typing import Optional
+from typing import List, Optional
 import torch
 from torch import device as Device
 from torch.utils.data import DataLoader
 from torch.optim import Optimizer
 from torch.nn import Module as Model
 from torch.nn.modules.loss import _Loss as Criterion
-from .callback import CallbackList
+from .callback import CallbackList, Callback
 from torch import Tensor
 from torch.cuda.amp import autocast, GradScaler
 
@@ -25,6 +25,7 @@ class Trainer:
         test_dataloader: Optional[DataLoader] = None,
         optimizer: Optional[Optimizer] = None,
         scaler: Optional[GradScaler] = None,
+        callbacks: Optional[List[Callback]] = None,
     ):
         self._model: Model = model
         self._device: Device = device
@@ -34,8 +35,8 @@ class Trainer:
         self._test_dataloader: Optional[DataLoader] = test_dataloader
         self._optimizer: Optional[Optimizer] = optimizer
         self._scaler: Optional[GradScaler] = scaler
+        self._callbacks: CallbackList = CallbackList(callbacks)
 
-        self._callbacks: Optional[CallbackList] = None
         self._epoch_num: Optional[int] = None
         self._batch_index: Optional[int] = None
         self._train_batch_loss: Optional[float] = None
@@ -47,8 +48,8 @@ class Trainer:
         self._test_batch_index: Optional[int] = None
         self._validation_batch_index: Optional[int] = None
         self._train_epoch_loss: Optional[float] = None
-
         self._train_epoch_num: Optional[int] = None
+        self._num_epochs: Optional[int] = None
 
     def _process_batch(
         self, inputs: Tensor, labels: Tensor, optimizer: Optional[Optimizer] = None
@@ -57,9 +58,22 @@ class Trainer:
             optimizer.zero_grad()
 
         if self._callbacks:
-            log_callback(  # TODO pass evertything
+            log_callback(
                 self._callbacks,
-                "on_train_batch_start" if optimizer else "on_validation_batch_start",
+                method="on_train_batch_start"
+                if optimizer
+                else "on_validation_batch_start",
+                **{
+                    "epoch": self._epoch_num,
+                    "batch_index": self._train_batch_index
+                    if optimizer
+                    else self._validation_batch_index,
+                    "inputs": inputs,
+                    "labels": labels,
+                    "model": self._model,
+                    "optimizer": optimizer,
+                    "scaler": self._scaler,
+                },
             )
 
         with autocast(enabled=self._scaler is not None):
@@ -80,9 +94,22 @@ class Trainer:
             self._validation_batch_loss = loss.item()
 
         if self._callbacks:
-            log_callback(  # TODO pass everything
+            log_callback(
                 self._callbacks,
-                "on_train_batch_end" if self._optimizer else "on_validation_batch_end",
+                method="on_train_batch_end" if optimizer else "on_validation_batch_end",
+                **{
+                    "epoch": self._epoch_num,
+                    "batch_index": self._train_batch_index
+                    if optimizer
+                    else self._validation_batch_index,
+                    "loss": self._train_batch_loss
+                    if optimizer
+                    else self._validation_batch_loss,
+                    "outputs": outputs,
+                    "model": self._model,
+                    "optimizer": optimizer,
+                    "scaler": self._scaler,
+                },
             )
 
     def _batch_loop(
@@ -111,7 +138,7 @@ class Trainer:
 
     def _process_epoch(self):
         if not self._train_dataloader:
-            raise  # TODO raise correct error
+            raise ValueError("Training dataloader is not provided.")
 
         self._train_epoch_loss = 0.0
 
@@ -120,7 +147,15 @@ class Trainer:
         if self._callbacks:
             log_callback(
                 self._callbacks,
-                "on_epoch_start",
+                method="on_epoch_start",
+                **{
+                    "epoch_num": self._train_epoch_num,
+                    "num_epochs": self._num_epochs,
+                    "dataloader": self._train_dataloader,  # Pass the dataloader here
+                    "model": self._model,
+                    "optimizer": self._optimizer,
+                    "scaler": self._scaler,
+                },
             )
 
         self._batch_loop(dataloader=self._train_dataloader, optimizer=self._optimizer)
@@ -130,12 +165,18 @@ class Trainer:
         if self._callbacks:
             log_callback(
                 self._callbacks,
-                "on_epoch_end",
+                method="on_epoch_end",
+                **{
+                    "epoch_num": self._train_epoch_num,
+                    "train_epoch_loss": self._train_epoch_loss,
+                    "validation_loss": getattr(self, "_validation_loss", None),
+                    "model": self._model,
+                },
             )
 
     def _validation_loop(self) -> float:
         if not self._validation_dataloader:
-            raise  # TODO raise correct error
+            raise ValueError("Validation dataloader is not provided.")
 
         self._validation_loss = 0.0
 
@@ -144,43 +185,45 @@ class Trainer:
         if self._callbacks:
             log_callback(
                 self._callbacks,
-                "on_validation_start",
-                dataloader=self._validation_dataloader,
-                device=self._device,
-                model=self._model,
-                criterion=self._criterion,
+                method="on_validation_start",
+                **{
+                    "epoch": self._epoch_num,
+                    "model": self._model,
+                    "dataloader": self._validation_dataloader,
+                },
             )
 
         with torch.no_grad():
-            self._validation_loss += self._batch_loop(
-                dataloader=self._validation_dataloader
-            )  # type: ignore
+            self._batch_loop(dataloader=self._validation_dataloader)
+            self._validation_loss += self._validation_total_batch_loss  # type: ignore
 
         if self._callbacks:
             log_callback(
                 self._callbacks,
-                "on_validation_end",
-                dataloader=self._validation_dataloader,
-                device=self._device,
-                model=self._model,
-                criterion=self._criterion,
+                method="on_validation_end",
+                **{
+                    "epoch": self._epoch_num,
+                    "validation_loss": self._validation_total_batch_loss,
+                },
             )
 
         return self._validation_loss
 
     def _test_loop(self):
         if not self._test_dataloader:
-            raise  # TODO raise correct error
+            raise ValueError("Test dataloader is not provided.")
 
         self._model.eval()
 
         if self._callbacks:
             log_callback(
                 self._callbacks,
-                "on_test_start",
-                dataloader=self._test_dataloader,
-                model=self._model,
-                device=self._device,
+                method="on_test_start",
+                **{
+                    "dataloader": self._test_dataloader,
+                    "model": self._model,
+                    "device": self._device,
+                },
             )
 
         with torch.no_grad():
@@ -190,7 +233,14 @@ class Trainer:
                 if self._callbacks:
                     log_callback(
                         self._callbacks,
-                        "on_test_batch_start",
+                        method="on_test_batch_start",
+                        **{
+                            "batch_index": self._test_batch_index,
+                            "inputs": batch[0],
+                            "labels": batch[1],
+                            "model": self._model,
+                            "device": self._device,
+                        },
                     )
 
                 inputs: Tensor = batch[0].to(self._device)
@@ -203,24 +253,45 @@ class Trainer:
                 if self._callbacks:
                     log_callback(
                         self._callbacks,
-                        "on_test_batch_end",
+                        method="on_test_batch_end",
+                        **{
+                            "batch_index": self._test_batch_index,
+                            "test_batch_loss": self._test_batch_loss,
+                            "predictions": predictions,
+                            "inputs": inputs,
+                            "labels": labels,
+                            "model": self._model,
+                        },
                     )
 
         if self._callbacks:
             log_callback(
                 self._callbacks,
-                "on_test_end",
+                method="on_test_end",
+                **{
+                    "model": self._model,
+                    "device": self._device,
+                },
             )
 
     def _train_val_loop(self, num_epochs: int):
         if not self._train_dataloader:
-            raise  # TODO raise correct error
+            raise ValueError("Training dataloader is not provided.")
+
+        self._num_epochs = num_epochs
 
         if self._callbacks:
             log_callback(
                 self._callbacks,
-                "on_train_start",
-                dataLoader=self._train_dataloader,
+                method="on_train_start",
+                **{
+                    "num_epochs": num_epochs,
+                    "train_dataloader": self._train_dataloader,
+                    "validation_dataloader": self._validation_dataloader,
+                    "model": self._model,
+                    "optimizer": self._optimizer,
+                    "scaler": self._scaler,
+                },
             )
 
         for epoch_num in range(num_epochs):
@@ -231,11 +302,30 @@ class Trainer:
             if self._validation_dataloader:
                 self._validation_loop()
 
+            if self._callbacks:
+                log_callback(
+                    self._callbacks,
+                    method="on_epoch_start",
+                    **{
+                        "epoch_num": self._train_epoch_num,
+                        "num_epochs": self._num_epochs,
+                        "dataloader": self._train_dataloader,  # Pass the dataloader here
+                        "model": self._model,
+                        "optimizer": self._optimizer,
+                        "scaler": self._scaler,
+                    },
+                )
+
         if self._callbacks:
             log_callback(
                 self._callbacks,
-                "on_train_end",
-                num_epochs=num_epochs,
+                method="on_train_end",
+                **{
+                    "num_epochs": num_epochs,
+                    "model": self._model,
+                    "optimizer": self._optimizer,
+                    "scaler": self._scaler,
+                },
             )
 
     def train(self, num_epochs: int):

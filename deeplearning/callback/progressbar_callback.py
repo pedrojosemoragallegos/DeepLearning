@@ -12,7 +12,6 @@ class ProgressBarCallback(Callback):
 
     def on_train_start(self, **kwargs: Dict[str, Any]) -> None:
         num_epochs: int = cast(int, kwargs.get("num_epochs"))
-
         assert (
             num_epochs is not None
         ), "Expected 'num_epochs' in kwargs for on_train_start"
@@ -28,7 +27,6 @@ class ProgressBarCallback(Callback):
     def on_epoch_start(self, **kwargs: Dict[str, Any]) -> None:
         dataloader: DataLoader = cast(DataLoader, kwargs.get("dataloader"))
         epoch_num: int = cast(int, kwargs.get("epoch_num"))
-
         total_batches: int = len(dataloader)
 
         assert total_batches > 0, "Dataloader has no batches!"
@@ -47,7 +45,6 @@ class ProgressBarCallback(Callback):
     def on_epoch_end(self, **kwargs: Dict[str, Any]) -> None:
         if self._batch_progress_bar:
             self._batch_progress_bar.close()
-
         if self._train_progress_bar:
             self._train_progress_bar.update(1)
 
