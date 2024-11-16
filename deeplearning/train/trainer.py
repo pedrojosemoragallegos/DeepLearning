@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from torch.optim import Optimizer
 from torch.nn import Module as Model
 from torch.nn.modules.loss import _Loss as Criterion
-from .callback import CallbackList, Callback
+from ..callback import CallbackList, Callback
 from torch import Tensor
 from torch.cuda.amp import autocast, GradScaler
 

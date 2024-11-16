@@ -4,7 +4,7 @@ from torch.nn import Module
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from .callback import Callback
-from deeplearning.checkpoint_handler import save_checkpoint
+from deeplearning.utils.checkpoint_handler import save_checkpoint
 
 
 class CheckpointCallback(Callback):
